@@ -32,13 +32,16 @@ jobs:
 
       - name: Restore google-services.json from GitHub Secret
         env:
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON || vars.GOOGLE_SERVICES_JSON }}
         run: |
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            case "$(printf '%s' "$GOOGLE_SERVICES_JSON" | tr -d '[:space:]' | cut -c1)" in
+              "{") printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json ;;
+              *)   printf '%s' "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json ;;
+            esac
           fi
-          if [ ! -f app/google-services.json ]; then
-            echo "::error::Missing app/google-services.json. Add your AI Studio app/google-services.json content as a Repository Secret named GOOGLE_SERVICES_JSON in GitHub (Settings -> Secrets and variables -> Actions)."
+          if [ ! -s app/google-services.json ]; then
+            echo "::error::Missing app/google-services.json. Add the contents of app/google-services.json as a Repository Secret named GOOGLE_SERVICES_JSON in GitHub (Settings -> Secrets and variables -> Actions -> Repository secrets)."
             exit 1
           fi
 
