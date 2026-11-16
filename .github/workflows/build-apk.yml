@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, aistudio-preview ]
     paths-ignore:
       - 'README.md'
       - 'LICENSE'
@@ -29,6 +29,18 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.14'
+
+      - name: Restore google-services.json from GitHub Secret
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          fi
+          if [ ! -f app/google-services.json ]; then
+            echo "::error::Missing app/google-services.json. Add your AI Studio app/google-services.json content as a Repository Secret named GOOGLE_SERVICES_JSON in GitHub (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
 
       - name: Build Debug APK
         run: gradle assembleDebug --no-daemon
