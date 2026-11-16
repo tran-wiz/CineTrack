@@ -14,11 +14,15 @@
 
 ## 📸 Screenshots
 
-> *Legacy MovieTracker UI preview (dark theme)*
+> *CineTrack on Android (Dark Theme)*
 
-| Home & Continue Watching | 3-Column Poster Grid (Search) | Series Season Tracker | Details (IMDb & Trakt) |
-| :---: | :---: | :---: | :---: |
-| ![Home](docs/screenshots/home.jpg) | ![Search](docs/screenshots/search.jpg) | ![Series](docs/screenshots/series.jpg) | ![Details](docs/screenshots/details.jpg) |
+| Home | For My Taste (AI) | Recommended Picks |
+| :---: | :---: | :---: |
+| ![Home](docs/screenshots/home.jpg) | ![For My Taste](docs/screenshots/discover.jpg) | ![Recommended Picks](docs/screenshots/recommended.jpg) |
+
+| Library & Web | Series Tracker | Details (IMDb & Trakt) |
+| :---: | :---: | :---: |
+| ![Library & Web](docs/screenshots/search.jpg) | ![Series Tracker](docs/screenshots/series.jpg) | ![Details](docs/screenshots/details.jpg) |
 
 ---
 
