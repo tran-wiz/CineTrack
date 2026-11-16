@@ -390,4 +390,45 @@ object TraktClient {
         }
         return list
     }
+
+    fun fetchTrendingContext(clientId: String): String {
+        val trimmedId = clientId.trim()
+        if (trimmedId.isBlank()) return ""
+        val lines = mutableListOf<String>()
+
+        fun appendSection(header: String, path: String, wrapperKey: String?) {
+            runCatching {
+                val resp = request("GET", path, trimmedId)
+                if (resp.code !in 200..299 || resp.body.isBlank()) return
+                val arr = JSONArray(resp.body)
+                if (arr.length() == 0) return
+                val sectionLines = mutableListOf<String>()
+                val isSeries = path.contains("/shows/")
+                val typeLabel = if (isSeries) "Series" else "Movie"
+                for (i in 0 until arr.length()) {
+                    val row = arr.optJSONObject(i) ?: continue
+                    val mediaObj = if (wrapperKey != null) row.optJSONObject(wrapperKey) else row
+                    if (mediaObj == null) continue
+                    val title = mediaObj.optString("title").trim()
+                    if (title.isBlank()) continue
+                    val year = mediaObj.optInt("year", 0)
+                    val yearStr = if (year > 0) year.toString() else "?"
+                    val watchers = row.optInt("watchers", 0)
+                    val meta = if (watchers > 0) "$typeLabel, Trakt $watchers watching" else "$typeLabel, Trakt Popular"
+                    sectionLines.add("- $title ($yearStr, $meta)")
+                }
+                if (sectionLines.isNotEmpty()) {
+                    lines.add(header)
+                    lines.addAll(sectionLines)
+                }
+            }
+        }
+
+        appendSection("Live Trakt Trending Movies:", "/movies/trending?limit=12", "movie")
+        appendSection("Live Trakt Trending TV Shows:", "/shows/trending?limit=12", "show")
+        appendSection("Live Trakt Popular Movies:", "/movies/popular?limit=8", null)
+        appendSection("Live Trakt Popular TV Shows:", "/shows/popular?limit=8", null)
+
+        return lines.joinToString("\n")
+    }
 }

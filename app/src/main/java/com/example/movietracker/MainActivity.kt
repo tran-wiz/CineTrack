@@ -31,7 +31,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -304,11 +303,7 @@ fun MovieTrackerApp(
                     },
                     onOpenEntry = ::openEntry,
                     onGoToSettings = { currentTab = AppTab.SETTINGS },
-                    onGoToWatchlist = { currentTab = AppTab.WATCHLIST },
-                    onOpenAiDiscover = {
-                        discoverSubTab = 0
-                        currentTab = AppTab.SEARCH
-                    }
+                    onGoToWatchlist = { currentTab = AppTab.WATCHLIST }
                 )
 
                 AppTab.WATCHLIST -> CollectionTabScreen(
@@ -647,8 +642,7 @@ fun HomeTabScreen(
     onQuickAdd: () -> Unit,
     onOpenEntry: (LibraryEntry) -> Unit,
     onGoToSettings: () -> Unit,
-    onGoToWatchlist: () -> Unit,
-    onOpenAiDiscover: () -> Unit
+    onGoToWatchlist: () -> Unit
 ) {
     val continueWatching = remember(allMovies) {
         buildLibraryEntries(allMovies, "", null, "Series", SortOption.UPDATED_DESC, false)
@@ -679,7 +673,7 @@ fun HomeTabScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("MovieTracker", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text("CineTrack", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
                     Text(
                         "${stats.watched} watched • ${stats.watchlist} watchlist • ${stats.total} total",
                         fontSize = 12.sp,
@@ -694,59 +688,6 @@ fun HomeTabScreen(
                     }
                     IconButton(onClick = onQuickAdd) {
                         Icon(AppIcons.Add, "Add Title", tint = Color.White)
-                    }
-                }
-            }
-        }
-
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                TraktPurple.copy(alpha = 0.28f),
-                                WatchlistBlue.copy(alpha = 0.16f),
-                                TraktSurface
-                            )
-                        )
-                    )
-                    .border(1.dp, TraktPurple.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
-                    .clickable(onClick = onOpenAiDiscover)
-                    .padding(16.dp)
-                    .testTag("home_ai_discover_card")
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(AppIcons.Sparkles, null, tint = ImdbGold, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("For My Taste", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Personalized picks from your ratings, library & current trends.",
-                            fontSize = 12.sp,
-                            color = Color(0xFFD1D5DB)
-                        )
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    FilledTonalButton(
-                        onClick = onOpenAiDiscover,
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = TraktPurple.copy(alpha = 0.3f),
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text("See Picks", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }

@@ -1,5 +1,6 @@
 package com.example.movietracker
 
+import android.content.SharedPreferences
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -23,10 +24,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+private const val PREF_AI_IGNORED = "ai_ignored_recommendations"
 
 private const val AI_TAG = "CinemaAiViewModel"
 
@@ -51,6 +56,24 @@ data class AiMovieSuggestion(
     val genres: String = "",
     val plot: String = "",
     val tmdbId: Int? = null
+) {
+    fun effectiveImdbUrl(): String {
+        val cleanId = imdbId.trim()
+        if (cleanId.isNotBlank()) {
+            return "https://www.imdb.com/title/$cleanId/"
+        }
+        val query = if (releaseYear > 0) "$title $releaseYear" else title
+        return "https://www.imdb.com/find/?q=${URLEncoder.encode(query.trim(), "UTF-8")}"
+    }
+}
+
+data class IgnoredAiRecommendation(
+    val title: String,
+    val releaseYear: Int = 0,
+    val type: String = "Movie",
+    val imdbId: String = "",
+    val genres: String = "",
+    val ignoredAt: Long = System.currentTimeMillis()
 )
 
 sealed interface CinemaAiUiState {
@@ -119,7 +142,7 @@ class CinemaAiViewModel : ViewModel() {
                             "reason" to Schema.string(description = "Brief 1-sentence reason why this matches the user's ratings/taste")
                         )
                     ),
-                    description = "Distinct movies or TV series recommended in the briefing"
+                    description = "Only newly recommended movies or TV series that the user has NOT watched or saved"
                 )
             )
         )
@@ -141,16 +164,109 @@ class CinemaAiViewModel : ViewModel() {
     private val _selectedMode = MutableStateFlow(TasteMode.HOT_FOR_ME)
     val selectedMode: StateFlow<TasteMode> = _selectedMode.asStateFlow()
 
+    private val _ignoredItems = MutableStateFlow<List<IgnoredAiRecommendation>>(emptyList())
+    val ignoredItems: StateFlow<List<IgnoredAiRecommendation>> = _ignoredItems.asStateFlow()
+    private var hasLoadedIgnored = false
+
     private val modeCache = mutableMapOf<TasteMode, CinemaAiUiState.Success>()
     private var activeJob: Job? = null
+
+    fun ensureIgnoredLoaded(prefs: SharedPreferences) {
+        if (hasLoadedIgnored) return
+        hasLoadedIgnored = true
+        _ignoredItems.value = loadIgnoredFromPrefs(prefs)
+    }
+
+    fun ignoreSuggestion(suggestion: AiMovieSuggestion, prefs: SharedPreferences) {
+        ensureIgnoredLoaded(prefs)
+        val current = _ignoredItems.value
+        val alreadyExists = current.any { existing ->
+            (suggestion.imdbId.isNotBlank() && existing.imdbId.equals(suggestion.imdbId, ignoreCase = true)) ||
+                (normalizeTitleForMatch(existing.title) == normalizeTitleForMatch(suggestion.title) &&
+                    (suggestion.releaseYear == 0 || existing.releaseYear == 0 || kotlin.math.abs(existing.releaseYear - suggestion.releaseYear) <= 1))
+        }
+        if (!alreadyExists) {
+            val newEntry = IgnoredAiRecommendation(
+                title = suggestion.title.trim(),
+                releaseYear = suggestion.releaseYear,
+                type = suggestion.type,
+                imdbId = suggestion.imdbId.trim(),
+                genres = suggestion.genres.trim(),
+                ignoredAt = System.currentTimeMillis()
+            )
+            val updated = (listOf(newEntry) + current).take(120)
+            _ignoredItems.value = updated
+            saveIgnoredToPrefs(prefs, updated)
+        }
+    }
+
+    fun restoreIgnoredRecommendation(item: IgnoredAiRecommendation, prefs: SharedPreferences) {
+        ensureIgnoredLoaded(prefs)
+        val updated = _ignoredItems.value.filterNot {
+            it.title.equals(item.title, ignoreCase = true) &&
+                it.releaseYear == item.releaseYear &&
+                it.imdbId.equals(item.imdbId, ignoreCase = true)
+        }
+        _ignoredItems.value = updated
+        saveIgnoredToPrefs(prefs, updated)
+    }
+
+    fun clearAllIgnoredRecommendations(prefs: SharedPreferences) {
+        hasLoadedIgnored = true
+        _ignoredItems.value = emptyList()
+        prefs.edit().remove(PREF_AI_IGNORED).apply()
+    }
+
+    private fun loadIgnoredFromPrefs(prefs: SharedPreferences): List<IgnoredAiRecommendation> {
+        val raw = prefs.getString(PREF_AI_IGNORED, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val title = obj.optString("title").trim()
+                    if (title.isBlank()) continue
+                    add(
+                        IgnoredAiRecommendation(
+                            title = title,
+                            releaseYear = obj.optInt("releaseYear", 0),
+                            type = obj.optString("type", "Movie").ifBlank { "Movie" },
+                            imdbId = obj.optString("imdbId", ""),
+                            genres = obj.optString("genres", ""),
+                            ignoredAt = obj.optLong("ignoredAt", 0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveIgnoredToPrefs(prefs: SharedPreferences, items: List<IgnoredAiRecommendation>) {
+        val arr = JSONArray()
+        items.forEach { item ->
+            arr.put(
+                JSONObject().apply {
+                    put("title", item.title)
+                    put("releaseYear", item.releaseYear)
+                    put("type", item.type)
+                    put("imdbId", item.imdbId)
+                    put("genres", item.genres)
+                    put("ignoredAt", item.ignoredAt)
+                }
+            )
+        }
+        prefs.edit().putString(PREF_AI_IGNORED, arr.toString()).apply()
+    }
 
     fun loadForMyTasteIfIdle(
         userLibrary: List<MovieItem>,
         omdbKey: String,
-        tmdbKey: String
+        tmdbKey: String,
+        traktClientId: String = ""
     ) {
         if (_uiState.value is CinemaAiUiState.Idle) {
-            loadForMyTaste(_selectedMode.value, userLibrary, omdbKey, tmdbKey)
+            loadForMyTaste(_selectedMode.value, userLibrary, omdbKey, tmdbKey, traktClientId)
         }
     }
 
@@ -159,12 +275,15 @@ class CinemaAiViewModel : ViewModel() {
         userLibrary: List<MovieItem>,
         omdbKey: String,
         tmdbKey: String,
+        traktClientId: String = "",
         forceRefresh: Boolean = false
     ) {
         _selectedMode.value = mode
         if (!forceRefresh) {
             modeCache[mode]?.let { cached ->
-                _uiState.value = cached
+                _uiState.value = cached.copy(
+                    suggestions = filterOutExcludedEntries(cached.suggestions, userLibrary, _ignoredItems.value)
+                )
                 return
             }
         }
@@ -173,9 +292,11 @@ class CinemaAiViewModel : ViewModel() {
         runTasteQuery(
             heading = mode.label,
             basePrompt = prompt,
+            userLibrary = userLibrary,
             includeWebTrending = (mode == TasteMode.HOT_FOR_ME),
             omdbKey = omdbKey,
             tmdbKey = tmdbKey,
+            traktClientId = traktClientId,
             cacheMode = mode
         )
     }
@@ -184,7 +305,8 @@ class CinemaAiViewModel : ViewModel() {
         question: String,
         userLibrary: List<MovieItem>,
         omdbKey: String,
-        tmdbKey: String
+        tmdbKey: String,
+        traktClientId: String = ""
     ) {
         val clean = question.trim()
         if (clean.isEmpty()) return
@@ -197,15 +319,20 @@ class CinemaAiViewModel : ViewModel() {
         runTasteQuery(
             heading = clean,
             basePrompt = prompt,
+            userLibrary = userLibrary,
             includeWebTrending = true,
             omdbKey = omdbKey,
             tmdbKey = tmdbKey,
+            traktClientId = traktClientId,
             cacheMode = null
         )
     }
 
-    private fun buildTasteProfileBlock(userLibrary: List<MovieItem>): String {
-        if (userLibrary.isEmpty()) {
+    private fun buildTasteProfileBlock(
+        userLibrary: List<MovieItem>,
+        ignoredList: List<IgnoredAiRecommendation>
+    ): String {
+        if (userLibrary.isEmpty() && ignoredList.isEmpty()) {
             return "User library is currently empty (no watched/rated titles yet)."
         }
 
@@ -246,6 +373,15 @@ class CinemaAiViewModel : ViewModel() {
                 "${item.title} [$tag]"
             }
 
+        val ignoredPromptList = ignoredList
+            .distinctBy { normalizeTitleForMatch(it.title) }
+            .take(30)
+            .joinToString("; ") { item ->
+                val yearPart = if (item.releaseYear > 0) " (${item.releaseYear})" else ""
+                val genrePart = if (item.genres.isNotBlank()) " [Genres: ${item.genres}]" else ""
+                "${item.title}$yearPart$genrePart"
+            }
+
         val weightedGenres = mutableMapOf<String, Double>()
         for (item in userLibrary) {
             if (item.genres.isBlank()) continue
@@ -270,11 +406,13 @@ class CinemaAiViewModel : ViewModel() {
             .take(6)
             .joinToString(", ") { it.key }
 
-        val existingTitles = userLibrary
-            .map { it.title.trim() }
+        val existingTitles = (
+            userLibrary.map { it.title.trim() } +
+                ignoredList.map { it.title.trim() }
+            )
             .filter { it.isNotBlank() }
             .distinctBy { it.lowercase(Locale.ROOT) }
-            .take(60)
+            .take(240)
             .joinToString(", ")
 
         return buildString {
@@ -282,13 +420,16 @@ class CinemaAiViewModel : ViewModel() {
                 appendLine("- Top preferred genres (weighted by user ratings): $topGenres")
             }
             if (favorites.isNotBlank()) {
-                appendLine("- Loved / High-rated watched titles: $favorites")
+                appendLine("- Reference titles the user loved/watched (DO NOT recommend these back; use only as taste examples): $favorites")
             }
             if (avoidList.isNotBlank()) {
-                appendLine("- Disliked / Dropped titles (AVOID recommending similar styles): $avoidList")
+                appendLine("- Disliked / Dropped titles (AVOID recommending these or similar styles): $avoidList")
+            }
+            if (ignoredPromptList.isNotBlank()) {
+                appendLine("- User-Ignored Recommendations (NEVER recommend these titles again, and AVOID recommending titles with similar themes, franchises, tone, or sub-genre): $ignoredPromptList")
             }
             if (existingTitles.isNotBlank()) {
-                appendLine("- Already in user's library/watchlist/dropped (DO NOT recommend these again): $existingTitles")
+                appendLine("- STRICT EXCLUSION LIST — Already Watched / Watchlist / Dropped / Ignored (NEVER recommend any of these): $existingTitles")
             }
         }.trim()
     }
@@ -298,12 +439,14 @@ class CinemaAiViewModel : ViewModel() {
         userLibrary: List<MovieItem>,
         customRequest: String?
     ): String {
-        val tasteProfile = buildTasteProfileBlock(userLibrary)
+        val ignoredList = _ignoredItems.value
+        val tasteProfile = buildTasteProfileBlock(userLibrary, ignoredList)
         val hasLibrary = userLibrary.isNotEmpty()
 
         return buildString {
-            appendLine("You are the personal recommendation curator inside MovieTracker.")
-            appendLine("Your goal is to recommend 5 to 6 movies or TV series tailored specifically to this user's taste.")
+            appendLine("You are the personal recommendation curator inside CineTrack.")
+            appendLine("Your goal is to recommend 6 NEW movies or TV series tailored specifically to this user's taste.")
+            appendLine("CRITICAL RULE: Recommend ONLY titles the user has NEVER watched, NEVER added to Watchlist, NEVER dropped, and NEVER ignored. Also avoid anything similar in tone/theme to the User-Ignored or Disliked/Dropped lists.")
             appendLine()
             appendLine("User Taste Profile:")
             appendLine(tasteProfile)
@@ -312,37 +455,39 @@ class CinemaAiViewModel : ViewModel() {
             if (!customRequest.isNullOrBlank()) {
                 appendLine("Custom User Request: $customRequest")
                 appendLine("Reply in the same language as the Custom User Request (Vietnamese if asked in Vietnamese, otherwise match its language).")
-                appendLine("Tailor the answer strictly to the user's rating taste above while avoiding anything similar to their Dropped/low-rated titles and never repeating titles already in their library.")
+                appendLine("Tailor the answer strictly to the user's rating taste above while avoiding anything similar to their Dropped/low-rated titles and NEVER recommending titles already in their library.")
             } else {
                 appendLine("Write in concise, natural Vietnamese mixed with original international movie/series titles (with release year, e.g. Title (2024)) so titles are easy to save to Watchlist.")
                 when (mode) {
                     TasteMode.HOT_FOR_ME -> {
                         if (hasLibrary) {
-                            appendLine("Task: Use Google Search / trending context to find currently trending or recent (2024-2026) movies and TV series that strongly match the user's high-rated titles and preferred genres, while avoiding styles similar to their Dropped/low-rated entries. Explain briefly why each pick fits (e.g. linking to a title they rated highly) and why it's buzzing now.")
+                            appendLine("Task: Use Google Search (prioritizing current IMDb Most Popular / Top Box Office and Rotten Tomatoes Trending / Certified Fresh / Popular Streaming charts) together with any live TMDB and Trakt trending lists below to find 6 NEW currently trending or recent (2024-2026) movies and TV series NOT already in the user's library/watchlist that strongly match their high-rated titles and preferred genres, while avoiding styles similar to their Dropped/low-rated entries. Explain briefly why each pick fits and where it is trending (e.g. IMDb, Rotten Tomatoes, Trakt, or TMDB).")
                         } else {
-                            appendLine("Task: Recommend 5 to 6 standout trending movies and TV series right now across diverse acclaimed genres to help the user start their Watchlist.")
+                            appendLine("Task: Use Google Search (prioritizing IMDb Most Popular, Rotten Tomatoes Trending/Certified Fresh, plus any live TMDB/Trakt lists below) to recommend 6 standout trending movies and TV series right now across diverse acclaimed genres to help the user start their Watchlist.")
                         }
                     }
                     TasteMode.DEEP_MATCH -> {
                         if (hasLibrary) {
-                            appendLine("Task: Prioritize pure taste compatibility over hype. Recommend 5 to 6 movies or TV series (including modern classics or hidden gems) that best match the user's highest personal ratings, pacing, and genres, while avoiding styles like their Dropped/low-rated entries. Explain clearly which of their rated titles makes each pick a great match.")
+                            appendLine("Task: Prioritize pure taste compatibility over hype. Recommend 6 NEW movies or TV series NOT already in the user's library/watchlist (including modern classics or hidden gems) that best match the user's highest personal ratings, pacing, and genres, while avoiding styles like their Dropped/low-rated entries.")
                         } else {
-                            appendLine("Task: Recommend 5 to 6 universally acclaimed must-watch movies and TV series across top genres to kick off the user's Watchlist.")
+                            appendLine("Task: Recommend 6 universally acclaimed must-watch movies and TV series across top genres to kick off the user's Watchlist.")
                         }
                     }
                 }
             }
             appendLine()
-            appendLine("Format cleanly with bullet points (•) and exact official English/international titles + (Year). Avoid markdown tables.")
+            appendLine("Format cleanly with short bullet points (• **Official Title (Year)**) and concise reasons. Avoid markdown tables.")
         }
     }
 
     private fun runTasteQuery(
         heading: String,
         basePrompt: String,
+        userLibrary: List<MovieItem>,
         includeWebTrending: Boolean,
         omdbKey: String,
         tmdbKey: String,
+        traktClientId: String,
         cacheMode: TasteMode?
     ) {
         activeJob?.cancel()
@@ -377,14 +522,24 @@ class CinemaAiViewModel : ViewModel() {
                     return@launch
                 }
 
-                val tmdbContext = if (includeWebTrending && tmdbKey.isNotBlank()) {
+                val ignoredSnapshot = _ignoredItems.value
+                val trendingContext = if (includeWebTrending && (tmdbKey.isNotBlank() || traktClientId.isNotBlank())) {
                     withContext(Dispatchers.IO) {
-                        runCatching { MediaApiClient.fetchTmdbTrendingContext(tmdbKey) }.getOrDefault("")
+                        val tmdbRaw = if (tmdbKey.isNotBlank()) {
+                            runCatching { MediaApiClient.fetchTmdbTrendingContext(tmdbKey) }.getOrDefault("")
+                        } else ""
+                        val traktRaw = if (traktClientId.isNotBlank()) {
+                            runCatching { TraktClient.fetchTrendingContext(traktClientId) }.getOrDefault("")
+                        } else ""
+                        listOf(
+                            filterTrendingContextAgainstExcluded(tmdbRaw, userLibrary, ignoredSnapshot),
+                            filterTrendingContextAgainstExcluded(traktRaw, userLibrary, ignoredSnapshot)
+                        ).filter { it.isNotBlank() }.joinToString("\n\n")
                     }
                 } else ""
 
-                val prompt = if (tmdbContext.isNotBlank()) {
-                    "$basePrompt\n\nLive TMDB Trending Context (cross-check with user's taste):\n$tmdbContext"
+                val prompt = if (trendingContext.isNotBlank()) {
+                    "$basePrompt\n\nLive Trending Feeds (TMDB & Trakt, pre-filtered to exclude user's library and ignored titles):\n$trendingContext"
                 } else basePrompt
 
                 // Step 2: Grounded Gemini 3.8 Flash (when trending web context is desired)
@@ -515,8 +670,17 @@ class CinemaAiViewModel : ViewModel() {
                     latestMetadata?.searchEntryPoint?.renderedContent
                 } else null
 
-                val extracted = extractMovieSuggestions(summaryText)
-                val enriched = enrichSuggestionsWithApis(extracted, omdbKey, tmdbKey)
+                val currentIgnored = _ignoredItems.value
+                val extracted = filterOutExcludedEntries(
+                    suggestions = extractMovieSuggestions(summaryText, userLibrary, currentIgnored),
+                    userLibrary = userLibrary,
+                    ignoredList = currentIgnored
+                )
+                val enriched = filterOutExcludedEntries(
+                    suggestions = enrichSuggestionsWithApis(extracted, omdbKey, tmdbKey),
+                    userLibrary = userLibrary,
+                    ignoredList = currentIgnored
+                )
 
                 val resultState = CinemaAiUiState.Success(
                     heading = heading,
@@ -545,12 +709,44 @@ class CinemaAiViewModel : ViewModel() {
         }
     }
 
-    private suspend fun extractMovieSuggestions(briefingText: String): List<AiMovieSuggestion> {
+    private fun filterTrendingContextAgainstExcluded(
+        rawContext: String,
+        userLibrary: List<MovieItem>,
+        ignoredList: List<IgnoredAiRecommendation>
+    ): String {
+        if (rawContext.isBlank() || (userLibrary.isEmpty() && ignoredList.isEmpty())) return rawContext
+        val titleKeys = (
+            userLibrary.map { normalizeTitleForMatch(it.title) } +
+                ignoredList.map { normalizeTitleForMatch(it.title) }
+            ).filter { it.isNotBlank() }.toSet()
+        return rawContext.lines().filter { line ->
+            if (!line.startsWith("- ")) return@filter true
+            val candidateTitle = line.removePrefix("- ").substringBefore(" (").trim()
+            normalizeTitleForMatch(candidateTitle) !in titleKeys
+        }.joinToString("\n")
+    }
+
+    private suspend fun extractMovieSuggestions(
+        briefingText: String,
+        userLibrary: List<MovieItem>,
+        ignoredList: List<IgnoredAiRecommendation>
+    ): List<AiMovieSuggestion> {
+        val libraryBlock = (
+            userLibrary.map { it.title.trim() } +
+                ignoredList.map { it.title.trim() }
+            )
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(180)
+            .joinToString(", ")
+
         return try {
             val extractionPrompt = """
-                Extract up to 8 distinct movies or TV series recommended in the text below.
-                Only include real movies or TV series (never actors, directors, or genres by themselves).
-                Use their standard English/international title for TMDB/IMDb lookup.
+                Extract up to 8 distinct movies or TV series that are being RECOMMENDED in the text below.
+                IMPORTANT:
+                - Do NOT extract movies merely mentioned as reference examples of what the user already watched or rated (e.g. "similar to Carry-On" or "liked The Godfather").
+                - Exclude any title in this already-owned or ignored list: $libraryBlock
+                - Use official English/international title for TMDB/IMDb lookup.
 
                 Text:
                 $briefingText
@@ -569,7 +765,7 @@ class CinemaAiViewModel : ViewModel() {
                 val obj = arr.optJSONObject(i) ?: continue
                 val title = obj.optString("title").trim()
                 if (title.isBlank()) continue
-                val key = title.lowercase(Locale.ROOT)
+                val key = normalizeTitleForMatch(title)
                 if (!seen.add(key)) continue
                 val type = if (obj.optString("type").equals("Series", ignoreCase = true)) "Series" else "Movie"
                 val year = obj.optInt("releaseYear", 0).takeIf { it in 1900..2100 } ?: 0
@@ -596,18 +792,18 @@ class CinemaAiViewModel : ViewModel() {
     }
 
     private fun extractTitlesLocally(briefingText: String): List<AiMovieSuggestion> {
-        val pattern = Regex("""(?m)(?:^|\*\*|\•|\-|\d+\.)\s*\*{0,2}([A-Z0-9][^\n(:*]{1,55}?)\*{0,2}\s*\((\d{4})\)""")
+        val pattern = Regex("""(?m)^\s*(?:[•\-\*]|\d+\.)\s*\*{0,2}([A-Z0-9][^\n(:*]{1,55}?)\*{0,2}\s*\((\d{4})\)""")
         val seen = mutableSetOf<String>()
         val results = mutableListOf<AiMovieSuggestion>()
         for (match in pattern.findAll(briefingText)) {
             val title = match.groupValues[1].trim().trimEnd(':', '-', ' ')
             val year = match.groupValues[2].toIntOrNull() ?: 0
             if (title.length < 2 || year !in 1900..2100) continue
-            val key = title.lowercase(Locale.ROOT)
+            val key = normalizeTitleForMatch(title)
             if (!seen.add(key)) continue
             val lineStart = briefingText.lastIndexOf('\n', match.range.first).let { if (it < 0) 0 else it + 1 }
             val lineEnd = briefingText.indexOf('\n', match.range.last).let { if (it < 0) briefingText.length else it }
-            val lineText = briefingText.substring(lineStart, lineEnd).trim()
+            val lineText = briefingText.substring(lineStart, lineEnd).replace("**", "").trim()
             val isSeries = lineText.contains("series", ignoreCase = true) ||
                 lineText.contains("season", ignoreCase = true) ||
                 lineText.contains("mùa", ignoreCase = true)
@@ -622,6 +818,18 @@ class CinemaAiViewModel : ViewModel() {
             if (results.size >= 8) break
         }
         return results
+    }
+
+    private fun filterOutExcludedEntries(
+        suggestions: List<AiMovieSuggestion>,
+        userLibrary: List<MovieItem>,
+        ignoredList: List<IgnoredAiRecommendation>
+    ): List<AiMovieSuggestion> {
+        if (suggestions.isEmpty() || (userLibrary.isEmpty() && ignoredList.isEmpty())) return suggestions
+        return suggestions.filter {
+            findLibraryMatch(it, userLibrary) == null &&
+                findIgnoredMatch(it, ignoredList) == null
+        }
     }
 
     private suspend fun enrichSuggestionsWithApis(
@@ -669,5 +877,51 @@ class CinemaAiViewModel : ViewModel() {
                 }.getOrDefault(item)
             }
         }
+    }
+}
+
+internal fun normalizeTitleForMatch(raw: String): String {
+    return raw.trim()
+        .lowercase(Locale.ROOT)
+        .replace(Regex("""\(\d{4}\)"""), "")
+        .replace(Regex("""[^a-z0-9\p{L}\s]"""), " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+}
+
+internal fun findLibraryMatch(
+    suggestion: AiMovieSuggestion,
+    allMovies: List<MovieItem>
+): MovieItem? {
+    if (suggestion.imdbId.isNotBlank()) {
+        allMovies.firstOrNull {
+            it.imdbId.equals(suggestion.imdbId, ignoreCase = true)
+        }?.let { return it }
+    }
+    val normSuggestion = normalizeTitleForMatch(suggestion.title)
+    if (normSuggestion.isBlank()) return null
+    return allMovies.firstOrNull { item ->
+        val normItem = normalizeTitleForMatch(item.title)
+        normItem == normSuggestion &&
+            (suggestion.releaseYear == 0 || item.releaseYear == 0 || kotlin.math.abs(item.releaseYear - suggestion.releaseYear) <= 1)
+    }
+}
+
+internal fun findIgnoredMatch(
+    suggestion: AiMovieSuggestion,
+    ignoredItems: List<IgnoredAiRecommendation>
+): IgnoredAiRecommendation? {
+    if (ignoredItems.isEmpty()) return null
+    if (suggestion.imdbId.isNotBlank()) {
+        ignoredItems.firstOrNull {
+            it.imdbId.equals(suggestion.imdbId, ignoreCase = true)
+        }?.let { return it }
+    }
+    val normSuggestion = normalizeTitleForMatch(suggestion.title)
+    if (normSuggestion.isBlank()) return null
+    return ignoredItems.firstOrNull { item ->
+        val normItem = normalizeTitleForMatch(item.title)
+        normItem == normSuggestion &&
+            (suggestion.releaseYear == 0 || item.releaseYear == 0 || kotlin.math.abs(item.releaseYear - suggestion.releaseYear) <= 1)
     }
 }

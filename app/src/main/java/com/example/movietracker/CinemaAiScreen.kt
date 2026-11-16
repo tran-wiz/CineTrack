@@ -9,6 +9,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,9 +31,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -51,10 +59,17 @@ fun CinemaAiDiscoverScreen(
 ) {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val prefs = remember { context.getSharedPreferences("movie_tracker_prefs", android.content.Context.MODE_PRIVATE) }
+    fun currentTraktClientId(): String = prefs.getString("trakt_client_id", "") ?: ""
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val selectedMode by viewModel.selectedMode.collectAsStateWithLifecycle()
+    val ignoredItems by viewModel.ignoredItems.collectAsStateWithLifecycle()
     var questionText by remember { mutableStateOf("") }
+    var sessionAddedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showIgnoredDialog by remember { mutableStateOf(false) }
 
     val tasteSummary = remember(allMovies) {
         val ratedCount = allMovies.count { it.personalRating != null }
@@ -84,22 +99,25 @@ fun CinemaAiDiscoverScreen(
     }
 
     LaunchedEffect(Unit) {
-        viewModel.loadForMyTasteIfIdle(allMovies, omdbKey, tmdbKey)
+        viewModel.ensureIgnoredLoaded(prefs)
+        viewModel.loadForMyTasteIfIdle(allMovies, omdbKey, tmdbKey, currentTraktClientId())
     }
 
     fun submitQuestion(raw: String) {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return
         keyboardController?.hide()
-        viewModel.askWithMyTaste(trimmed, allMovies, omdbKey, tmdbKey)
+        sessionAddedKeys = emptySet()
+        viewModel.askWithMyTaste(trimmed, allMovies, omdbKey, tmdbKey, currentTraktClientId())
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        Box(modifier = Modifier.weight(1f)) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
             item {
                 Box(
                     modifier = Modifier
@@ -149,11 +167,13 @@ fun CinemaAiDiscoverScreen(
                         }
                         IconButton(
                             onClick = {
+                                sessionAddedKeys = emptySet()
                                 viewModel.loadForMyTaste(
                                     mode = selectedMode,
                                     userLibrary = allMovies,
                                     omdbKey = omdbKey,
                                     tmdbKey = tmdbKey,
+                                    traktClientId = currentTraktClientId(),
                                     forceRefresh = true
                                 )
                             },
@@ -180,16 +200,35 @@ fun CinemaAiDiscoverScreen(
                         FilterChip(
                             selected = selected,
                             onClick = {
+                                sessionAddedKeys = emptySet()
                                 viewModel.loadForMyTaste(
                                     mode = mode,
                                     userLibrary = allMovies,
                                     omdbKey = omdbKey,
-                                    tmdbKey = tmdbKey
+                                    tmdbKey = tmdbKey,
+                                    traktClientId = currentTraktClientId()
                                 )
                             },
                             label = { Text(mode.label, fontSize = 12.sp) },
                             modifier = Modifier.testTag("ai_taste_mode_${mode.name.lowercase(Locale.ROOT)}")
                         )
+                    }
+                    if (ignoredItems.isNotEmpty()) {
+                        item(key = "ignored_chip") {
+                            AssistChip(
+                                onClick = { showIgnoredDialog = true },
+                                leadingIcon = {
+                                    Icon(
+                                        AppIcons.NotInterested,
+                                        contentDescription = null,
+                                        tint = Color(0xFFFCA5A5),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                label = { Text("Ignored (${ignoredItems.size})", fontSize = 12.sp) },
+                                modifier = Modifier.testTag("ai_manage_ignored_button")
+                            )
+                        }
                     }
                 }
             }
@@ -248,7 +287,7 @@ fun CinemaAiDiscoverScreen(
                                         fontSize = 14.sp
                                     )
                                     Text(
-                                        "Matching your ratings with trending releases",
+                                        "Matching your ratings with TMDB, Trakt & web charts",
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         fontSize = 12.sp
                                     )
@@ -316,6 +355,7 @@ fun CinemaAiDiscoverScreen(
                                                 userLibrary = allMovies,
                                                 omdbKey = omdbKey,
                                                 tmdbKey = tmdbKey,
+                                                traktClientId = currentTraktClientId(),
                                                 forceRefresh = true
                                             )
                                         }
@@ -347,7 +387,14 @@ fun CinemaAiDiscoverScreen(
                         )
                     }
 
-                    if (state.suggestions.isNotEmpty()) {
+                    val visiblePicks = state.suggestions.filter { suggestion ->
+                        val key = "${normalizeTitleForMatch(suggestion.title)}#${suggestion.releaseYear}"
+                        val match = findLibraryMatch(suggestion, allMovies)
+                        val ignored = findIgnoredMatch(suggestion, ignoredItems)
+                        (match == null && ignored == null) || key in sessionAddedKeys
+                    }
+
+                    if (visiblePicks.isNotEmpty()) {
                         item {
                             Row(
                                 modifier = Modifier
@@ -357,13 +404,13 @@ fun CinemaAiDiscoverScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    "Recommended Picks (${state.suggestions.size})",
+                                    "Recommended Picks (${visiblePicks.size})",
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
                                 )
                                 Text(
-                                    "Tap to save to Watchlist",
+                                    "Tap IMDb, Save, or Ignore",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -371,20 +418,54 @@ fun CinemaAiDiscoverScreen(
                         }
 
                         items(
-                            items = state.suggestions,
+                            items = visiblePicks,
                             key = { "${it.title.lowercase(Locale.ROOT)}#${it.releaseYear}#${it.type}" }
                         ) { suggestion ->
                             val existingMatch = remember(suggestion, allMovies) {
-                                findMatchingMovieInLibrary(suggestion, allMovies)
+                                findLibraryMatch(suggestion, allMovies)
                             }
-                            val key = "${suggestion.title.lowercase(Locale.ROOT)}#${suggestion.releaseYear}"
-                            val isAdding = key in addingTitles
+                            val addKey = "${suggestion.title.lowercase(Locale.ROOT)}#${suggestion.releaseYear}"
+                            val sessionKey = "${normalizeTitleForMatch(suggestion.title)}#${suggestion.releaseYear}"
+                            val isAdding = addKey in addingTitles
 
                             AiMovieSuggestionCard(
                                 suggestion = suggestion,
                                 existingMatch = existingMatch,
                                 isAdding = isAdding,
-                                onAddToWatchlist = { onAddToWatchlist(suggestion) },
+                                onAddToWatchlist = {
+                                    sessionAddedKeys = sessionAddedKeys + sessionKey
+                                    onAddToWatchlist(suggestion)
+                                },
+                                onOpenImdb = {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(suggestion.effectiveImdbUrl()))
+                                        )
+                                    }
+                                },
+                                onIgnore = {
+                                    viewModel.ignoreSuggestion(suggestion, prefs)
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        val res = snackbarHostState.showSnackbar(
+                                            message = "Ignored \"${suggestion.title}\" — won't suggest it or similar picks",
+                                            actionLabel = "Undo",
+                                            duration = SnackbarDuration.Short
+                                        )
+                                        if (res == SnackbarResult.ActionPerformed) {
+                                            viewModel.restoreIgnoredRecommendation(
+                                                IgnoredAiRecommendation(
+                                                    title = suggestion.title.trim(),
+                                                    releaseYear = suggestion.releaseYear,
+                                                    type = suggestion.type,
+                                                    imdbId = suggestion.imdbId.trim(),
+                                                    genres = suggestion.genres.trim()
+                                                ),
+                                                prefs
+                                            )
+                                        }
+                                    }
+                                },
                                 onOpenAddDialog = { onOpenAddDialogWithTitle(suggestion.title) },
                                 onOpenExisting = { existing -> onOpenExistingEntry(existing) }
                             )
@@ -392,6 +473,14 @@ fun CinemaAiDiscoverScreen(
                     }
                 }
             }
+            }
+
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
         }
 
         // Compact input bar to refine taste or ask for a specific mood/genre
@@ -414,7 +503,12 @@ fun CinemaAiDiscoverScreen(
                         .weight(1f)
                         .testTag("ai_ask_input"),
                     placeholder = {
-                        Text("Ask for a mood or genre (e.g. short thriller)...", fontSize = 13.sp)
+                        Text(
+                            "Ask for a mood or genre...",
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     },
                     leadingIcon = {
                         Icon(
@@ -457,6 +551,20 @@ fun CinemaAiDiscoverScreen(
             }
         }
     }
+
+    if (showIgnoredDialog) {
+        IgnoredRecommendationsDialog(
+            items = ignoredItems,
+            onRestore = { item ->
+                viewModel.restoreIgnoredRecommendation(item, prefs)
+            },
+            onClearAll = {
+                viewModel.clearAllIgnoredRecommendations(prefs)
+                showIgnoredDialog = false
+            },
+            onDismiss = { showIgnoredDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -468,6 +576,10 @@ private fun AiBriefingCard(
     searchEntryHtml: String?,
     onOpenUrl: (String) -> Unit
 ) {
+    val formattedBody = remember(bodyText) {
+        formatMarkdownAnnotatedString(bodyText)
+    }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = TraktSurface),
         shape = RoundedCornerShape(14.dp),
@@ -502,9 +614,9 @@ private fun AiBriefingCard(
 
             Spacer(Modifier.height(8.dp))
             Text(
-                text = bodyText,
+                text = formattedBody,
                 fontSize = 13.sp,
-                lineHeight = 19.sp,
+                lineHeight = 20.sp,
                 color = Color(0xFFE5E7EB)
             )
 
@@ -556,6 +668,120 @@ private fun AiBriefingCard(
             if (!searchEntryHtml.isNullOrBlank()) {
                 Spacer(Modifier.height(10.dp))
                 SearchEntryPointWebView(htmlContent = searchEntryHtml, onOpenUrl = onOpenUrl)
+            }
+        }
+    }
+}
+
+private fun formatMarkdownAnnotatedString(rawText: String): AnnotatedString {
+    val lines = rawText.replace("\r\n", "\n").split("\n")
+    return buildAnnotatedString {
+        lines.forEachIndexed { index, rawLine ->
+            val trimmed = rawLine.trimStart()
+            when {
+                trimmed.startsWith("### ") -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)) {
+                        appendMarkdownInline(trimmed.removePrefix("### ").trim())
+                    }
+                }
+                trimmed.startsWith("## ") -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White)) {
+                        appendMarkdownInline(trimmed.removePrefix("## ").trim())
+                    }
+                }
+                trimmed.startsWith("# ") -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White)) {
+                        appendMarkdownInline(trimmed.removePrefix("# ").trim())
+                    }
+                }
+                trimmed.startsWith("* ") -> {
+                    withStyle(SpanStyle(color = TraktPurple, fontWeight = FontWeight.Bold)) {
+                        append("• ")
+                    }
+                    appendMarkdownInline(trimmed.removePrefix("* ").trimStart())
+                }
+                trimmed.startsWith("- ") -> {
+                    withStyle(SpanStyle(color = TraktPurple, fontWeight = FontWeight.Bold)) {
+                        append("• ")
+                    }
+                    appendMarkdownInline(trimmed.removePrefix("- ").trimStart())
+                }
+                trimmed.startsWith("• ") -> {
+                    withStyle(SpanStyle(color = TraktPurple, fontWeight = FontWeight.Bold)) {
+                        append("• ")
+                    }
+                    appendMarkdownInline(trimmed.removePrefix("• ").trimStart())
+                }
+                else -> {
+                    appendMarkdownInline(rawLine)
+                }
+            }
+            if (index < lines.lastIndex) {
+                append("\n")
+            }
+        }
+    }
+}
+
+private fun AnnotatedString.Builder.appendMarkdownInline(text: String) {
+    var i = 0
+    while (i < text.length) {
+        when {
+            text.startsWith("**", i) -> {
+                val close = text.indexOf("**", i + 2)
+                if (close > i + 2) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White)) {
+                        appendMarkdownInline(text.substring(i + 2, close))
+                    }
+                    i = close + 2
+                } else {
+                    i += 2
+                }
+            }
+            text.startsWith("__", i) -> {
+                val close = text.indexOf("__", i + 2)
+                if (close > i + 2) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White)) {
+                        appendMarkdownInline(text.substring(i + 2, close))
+                    }
+                    i = close + 2
+                } else {
+                    i += 2
+                }
+            }
+            text[i] == '`' -> {
+                val close = text.indexOf('`', i + 1)
+                if (close > i + 1) {
+                    withStyle(
+                        SpanStyle(
+                            fontFamily = FontFamily.Monospace,
+                            color = Color(0xFFC4B5FD),
+                            background = Color(0xFF232533)
+                        )
+                    ) {
+                        append(text.substring(i + 1, close))
+                    }
+                    i = close + 1
+                } else {
+                    append('`')
+                    i++
+                }
+            }
+            text[i] == '*' && !text.startsWith("**", i) -> {
+                val close = text.indexOf('*', i + 1)
+                if (close > i + 1) {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = Color(0xFFF3F4F6))) {
+                        append(text.substring(i + 1, close))
+                    }
+                    i = close + 1
+                } else {
+                    append('*')
+                    i++
+                }
+            }
+            else -> {
+                append(text[i])
+                i++
             }
         }
     }
@@ -613,6 +839,8 @@ private fun AiMovieSuggestionCard(
     existingMatch: MovieItem?,
     isAdding: Boolean,
     onAddToWatchlist: () -> Unit,
+    onOpenImdb: () -> Unit,
+    onIgnore: () -> Unit,
     onOpenAddDialog: () -> Unit,
     onOpenExisting: (MovieItem) -> Unit
 ) {
@@ -699,9 +927,9 @@ private fun AiMovieSuggestionCard(
 
                 Spacer(Modifier.height(10.dp))
 
-                Row(
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (existingMatch != null) {
                         val (statusText, statusColor) = when (existingMatch.status) {
@@ -715,6 +943,7 @@ private fun AiMovieSuggestionCard(
                                 containerColor = statusColor.copy(alpha = 0.2f),
                                 contentColor = statusColor
                             ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .heightIn(min = 48.dp)
                                 .testTag("ai_open_existing_${suggestion.title}")
@@ -722,6 +951,20 @@ private fun AiMovieSuggestionCard(
                             Icon(AppIcons.Check, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(statusText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+
+                        OutlinedButton(
+                            onClick = onOpenImdb,
+                            border = BorderStroke(1.dp, ImdbGold.copy(alpha = 0.55f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = ImdbGold),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("ai_imdb_${suggestion.title}")
+                        ) {
+                            Icon(AppIcons.OpenInNew, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("IMDb", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     } else {
                         Button(
@@ -731,6 +974,7 @@ private fun AiMovieSuggestionCard(
                                 containerColor = WatchlistBlue,
                                 contentColor = Color.White
                             ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .heightIn(min = 48.dp)
                                 .testTag("ai_add_watchlist_${suggestion.title}")
@@ -749,7 +993,36 @@ private fun AiMovieSuggestionCard(
                         }
 
                         OutlinedButton(
+                            onClick = onOpenImdb,
+                            border = BorderStroke(1.dp, ImdbGold.copy(alpha = 0.55f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = ImdbGold),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("ai_imdb_${suggestion.title}")
+                        ) {
+                            Icon(AppIcons.OpenInNew, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("IMDb", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = onIgnore,
+                            border = BorderStroke(1.dp, DroppedRed.copy(alpha = 0.45f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("ai_ignore_${suggestion.title}")
+                        ) {
+                            Icon(AppIcons.NotInterested, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Ignore", fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
                             onClick = onOpenAddDialog,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .heightIn(min = 48.dp)
                                 .testTag("ai_edit_add_${suggestion.title}")
@@ -765,18 +1038,109 @@ private fun AiMovieSuggestionCard(
     }
 }
 
-private fun findMatchingMovieInLibrary(
-    suggestion: AiMovieSuggestion,
-    allMovies: List<MovieItem>
-): MovieItem? {
-    if (suggestion.imdbId.isNotBlank()) {
-        allMovies.firstOrNull {
-            it.imdbId.equals(suggestion.imdbId, ignoreCase = true)
-        }?.let { return it }
-    }
-    val normTitle = suggestion.title.trim().lowercase(Locale.ROOT)
-    return allMovies.firstOrNull { item ->
-        item.title.trim().lowercase(Locale.ROOT) == normTitle &&
-            (suggestion.releaseYear == 0 || item.releaseYear == 0 || kotlin.math.abs(item.releaseYear - suggestion.releaseYear) <= 1)
-    }
+@Composable
+private fun IgnoredRecommendationsDialog(
+    items: List<IgnoredAiRecommendation>,
+    onRestore: (IgnoredAiRecommendation) -> Unit,
+    onClearAll: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = TraktSurface,
+        title = {
+            Text(
+                "Ignored Recommendations (${items.size})",
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                fontSize = 17.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "AI won't recommend these titles or similar picks next time.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (items.isEmpty()) {
+                    Text(
+                        "No ignored recommendations.",
+                        fontSize = 13.sp,
+                        color = Color(0xFFD1D5DB)
+                    )
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(
+                            items = items,
+                            key = { "${it.title}#${it.releaseYear}#${it.imdbId}" }
+                        ) { item ->
+                            Surface(
+                                color = TraktSurfaceVar,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        val yearText = if (item.releaseYear > 0) " (${item.releaseYear})" else ""
+                                        Text(
+                                            "${item.title}$yearText",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (item.genres.isNotBlank()) {
+                                            Text(
+                                                item.genres,
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    TextButton(
+                                        onClick = { onRestore(item) },
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    ) {
+                                        Text("Restore", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        },
+        dismissButton = {
+            if (items.isNotEmpty()) {
+                TextButton(
+                    onClick = onClearAll,
+                    colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFCA5A5))
+                ) {
+                    Text("Clear All")
+                }
+            }
+        }
+    )
 }

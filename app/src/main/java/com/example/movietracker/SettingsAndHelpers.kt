@@ -190,7 +190,7 @@ internal fun shareBackupFileToDrive(context: Context, db: MovieDatabaseHelper) {
     val dir = File(context.cacheDir, "backups").apply { if (!exists()) mkdirs() }
     val outFile = File(dir, "MovieTracker_Backup_${CsvAndBackupHelper.todayIsoDate()}.json")
     outFile.writeText(CsvAndBackupHelper.exportToJson(db.getAllMovies()), Charsets.UTF_8)
-    val uri = FileProvider.getUriForFile(context, "com.example.movietracker.fileprovider", outFile)
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", outFile)
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "application/json"
         putExtra(Intent.EXTRA_STREAM, uri)
