@@ -5,9 +5,27 @@
 
     <queries>
         <package android:name="tv.trakt.trakt" />
+        <package android:name="tv.trakt.trakt.v3" />
+        <package android:name="tv.trakt" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" android:host="trakt.tv" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="app.trakt.tv" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="www.trakt.tv" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="trakt" />
         </intent>
     </queries>
 

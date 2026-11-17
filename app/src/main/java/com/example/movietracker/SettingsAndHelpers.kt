@@ -2,12 +2,14 @@
 
 package com.example.movietracker
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -218,29 +220,55 @@ internal suspend fun openTraktTitleInAppOrBrowser(
             isSeries = isSeries
         )
     }
-    val uri = Uri.parse(resolvedUrl)
-    val traktAppIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-        setPackage("tv.trakt.trakt")
+
+    val candidateUrls = buildList {
+        add(resolvedUrl)
+        val path = resolvedUrl.removePrefix("https://trakt.tv/").removePrefix("http://trakt.tv/")
+        if (path != resolvedUrl && (path.startsWith("movies/") || path.startsWith("shows/"))) {
+            add("https://app.trakt.tv/$path")
+            add("trakt://$path")
+        }
+    }.distinct()
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        for (candidate in candidateUrls) {
+            val nonBrowserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(candidate)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REQUIRE_NON_BROWSER)
+            }
+            try {
+                context.startActivity(nonBrowserIntent)
+                return
+            } catch (_: ActivityNotFoundException) {
+                // No verified/default non-browser handler for this URL; try next candidate
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    val traktPackages = listOf("tv.trakt.trakt", "tv.trakt.trakt.v3", "tv.trakt")
+    for (pkg in traktPackages) {
+        for (candidate in candidateUrls) {
+            val pkgIntent = Intent(Intent.ACTION_VIEW, Uri.parse(candidate)).apply {
+                setPackage(pkg)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(pkgIntent)
+                return
+            } catch (_: ActivityNotFoundException) {
+                // Package not installed or does not accept this URI
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(resolvedUrl)).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
-    val openedInApp = runCatching {
-        if (traktAppIntent.resolveActivity(context.packageManager) != null) {
-            context.startActivity(traktAppIntent)
-            true
-        } else {
-            false
-        }
-    }.getOrDefault(false)
-
-    if (!openedInApp) {
-        val browserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching {
-            context.startActivity(browserIntent)
-        }.onFailure {
-            Toast.makeText(context, "Could not open Trakt link", Toast.LENGTH_SHORT).show()
-        }
+    runCatching {
+        context.startActivity(browserIntent)
+    }.onFailure {
+        Toast.makeText(context, "Could not open Trakt link", Toast.LENGTH_SHORT).show()
     }
 }
 
