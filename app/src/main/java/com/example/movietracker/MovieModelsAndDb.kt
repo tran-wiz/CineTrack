@@ -365,7 +365,7 @@ class MovieDatabaseHelper(context: Context) :
 
     companion object {
         private const val DATABASE_NAME = "movie_tracker.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
         private const val TABLE_MOVIES = "movies"
     }
 
@@ -409,6 +409,31 @@ class MovieDatabaseHelper(context: Context) :
         }
         if (oldVersion < 3) {
             runCatching { db.execSQL("ALTER TABLE $TABLE_MOVIES ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0") }
+        }
+        if (oldVersion < 4) {
+            runCatching {
+                db.execSQL(
+                    """
+                    UPDATE $TABLE_MOVIES
+                    SET genres = CASE
+                        WHEN TRIM(genres) = '' THEN 'Documentary'
+                        WHEN LOWER(genres) NOT LIKE '%documentary%' THEN genres || ', Documentary'
+                        ELSE genres
+                    END
+                    WHERE LOWER(type) = 'documentary'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE $TABLE_MOVIES
+                    SET type = CASE
+                        WHEN season_number IS NOT NULL AND season_number > 0 THEN 'Series'
+                        ELSE 'Movie'
+                    END
+                    WHERE LOWER(type) = 'documentary'
+                    """.trimIndent()
+                )
+            }
         }
     }
 
@@ -964,11 +989,7 @@ object CsvAndBackupHelper {
                 if (firstCol.isEmpty()) continue
 
                 val rawType = cols.getOrNull(1)?.trim().orEmpty().ifEmpty { "Movie" }
-                val normalizedType = when {
-                    rawType.equals("Series", ignoreCase = true) -> "Series"
-                    rawType.equals("Documentary", ignoreCase = true) -> "Documentary"
-                    else -> "Movie"
-                }
+                val isDocType = rawType.equals("Documentary", ignoreCase = true)
                 val releaseYear = cols.getOrNull(2)?.trim()?.take(4)?.toIntOrNull() ?: 0
                 val imdbUrl = cols.getOrNull(3)?.trim().orEmpty()
                 val imdbId = extractImdbId(imdbUrl)
@@ -997,7 +1018,7 @@ object CsvAndBackupHelper {
 
                 var cleanTitle = firstCol
                 var seasonNum: Int? = null
-                if (normalizedType == "Series") {
+                if (rawType.equals("Series", ignoreCase = true) || isDocType) {
                     val m = seasonRegex.matchEntire(firstCol)
                     if (m != null) {
                         val base = m.groupValues[1].trim()
@@ -1008,6 +1029,12 @@ object CsvAndBackupHelper {
                             seasonNum = s
                         }
                     }
+                }
+
+                val normalizedType = when {
+                    rawType.equals("Series", ignoreCase = true) -> "Series"
+                    isDocType && seasonNum != null -> "Series"
+                    else -> "Movie"
                 }
 
                 items.add(
@@ -1021,6 +1048,7 @@ object CsvAndBackupHelper {
                         status = status,
                         watchedDate = watchedDate,
                         rewatchCount = rewatchCount,
+                        genres = if (isDocType) "Documentary" else "",
                         notes = extraNotes.joinToString(" | ")
                     )
                 )
@@ -1103,20 +1131,34 @@ object CsvAndBackupHelper {
         val list = mutableListOf<MovieItem>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
+            val rawType = o.optString("type", "Movie")
+            val seasonNum = if (o.isNull("seasonNumber")) null else o.optInt("seasonNumber")
+            val isDoc = rawType.equals("Documentary", ignoreCase = true)
+            val resolvedType = when {
+                rawType.equals("Series", ignoreCase = true) -> "Series"
+                isDoc && seasonNum != null && seasonNum > 0 -> "Series"
+                else -> "Movie"
+            }
+            val rawGenres = o.optString("genres", "")
+            val resolvedGenres = if (isDoc && !rawGenres.contains("Documentary", ignoreCase = true)) {
+                if (rawGenres.isBlank()) "Documentary" else "$rawGenres, Documentary"
+            } else {
+                rawGenres
+            }
             list.add(
                 MovieItem(
                     title = o.optString("title", ""),
-                    type = o.optString("type", "Movie"),
+                    type = resolvedType,
                     releaseYear = o.optInt("releaseYear", 0),
                     imdbId = o.optString("imdbId", ""),
                     imdbUrl = o.optString("imdbUrl", ""),
-                    seasonNumber = if (o.isNull("seasonNumber")) null else o.optInt("seasonNumber"),
+                    seasonNumber = seasonNum,
                     status = MovieStatus.fromCode(o.optString("status", "WATCHLIST")),
                     watchedDate = o.optString("watchedDate", ""),
                     rewatchCount = o.optInt("rewatchCount", 0),
                     imdbRating = if (o.isNull("imdbRating")) null else o.optDouble("imdbRating"),
                     personalRating = if (o.isNull("personalRating")) null else o.optDouble("personalRating"),
-                    genres = o.optString("genres", ""),
+                    genres = resolvedGenres,
                     plot = o.optString("plot", ""),
                     posterUrl = o.optString("posterUrl", ""),
                     notes = o.optString("notes", ""),

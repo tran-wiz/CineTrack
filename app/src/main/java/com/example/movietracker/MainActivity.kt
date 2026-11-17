@@ -969,12 +969,12 @@ fun CollectionTabScreen(
                     }
                 }
             }
-            listOf("Movie", "Series", "Documentary").forEach { t ->
+            listOf("Movie" to "Movies", "Series" to "Series").forEach { (value, label) ->
                 item {
                     FilterChip(
-                        selected = typeFilter == t,
-                        onClick = { onTypeFilterChange(if (typeFilter == t) null else t) },
-                        label = { Text(if (t == "Documentary") "Doc" else t) }
+                        selected = typeFilter == value,
+                        onClick = { onTypeFilterChange(if (typeFilter == value) null else value) },
+                        label = { Text(label) }
                     )
                 }
             }
@@ -1278,7 +1278,7 @@ fun SearchTabScreen(
                             label = { Text("All (${entries.size})") }
                         )
                     }
-                    listOf("Series" to "Series", "Movie" to "Movies", "Documentary" to "Docs").forEach { (value, label) ->
+                    listOf("Series" to "Series", "Movie" to "Movies").forEach { (value, label) ->
                         item {
                             FilterChip(
                                 selected = typeFilter == value,

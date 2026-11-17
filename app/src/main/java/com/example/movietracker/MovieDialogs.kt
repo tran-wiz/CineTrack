@@ -5,6 +5,7 @@ package com.example.movietracker
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -32,6 +34,127 @@ import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
+private fun isoDateToUtcMillis(dateStr: String): Long {
+    val utcFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+        isLenient = false
+    }
+    val candidate = dateStr.trim().take(10)
+    if (candidate.length == 10) {
+        runCatching { utcFmt.parse(candidate)?.time }.getOrNull()?.let { return it }
+    }
+    val today = CsvAndBackupHelper.todayIsoDate()
+    return runCatching { utcFmt.parse(today)?.time }.getOrNull() ?: System.currentTimeMillis()
+}
+
+private fun utcMillisToIsoDate(millis: Long): String {
+    val utcFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
+    return utcFmt.format(Date(millis))
+}
+
+@Composable
+private fun WatchedDateSelectorRow(
+    watchedDate: String,
+    onDatePicked: (String) -> Unit,
+    onClearDate: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    Surface(
+        onClick = { showDatePicker = true },
+        shape = RoundedCornerShape(10.dp),
+        color = TraktSurfaceVar.copy(alpha = 0.45f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("watched_date_picker_button")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Watched Date",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = watchedDate.ifBlank { "Tap to pick date (defaults to Today)" },
+                    fontSize = 14.sp,
+                    fontWeight = if (watchedDate.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (watchedDate.isNotBlank()) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+            if (watchedDate.isNotBlank()) {
+                IconButton(onClick = onClearDate) {
+                    Icon(
+                        AppIcons.Close,
+                        contentDescription = "Clear watched date",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            IconButton(onClick = { showDatePicker = true }) {
+                Icon(
+                    AppIcons.Calendar,
+                    contentDescription = "Pick watched date",
+                    tint = TraktPurple
+                )
+            }
+        }
+    }
+
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(
+            initialSelectedDateMillis = isoDateToUtcMillis(watchedDate)
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    val picked = datePickerState.selectedDateMillis?.let(::utcMillisToIsoDate)
+                        ?: CsvAndBackupHelper.todayIsoDate()
+                    onDatePicked(picked)
+                    showDatePicker = false
+                }) {
+                    Text("OK")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        onDatePicked(CsvAndBackupHelper.todayIsoDate())
+                        showDatePicker = false
+                    }) {
+                        Text("Today")
+                    }
+                    TextButton(onClick = { showDatePicker = false }) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+}
 
 @Composable
 fun SeriesDetailDialog(
@@ -350,6 +473,7 @@ fun MovieDetailDialog(
     var syncMessage by remember { mutableStateOf("") }
     var isFetching by remember { mutableStateOf(false) }
     var isOpeningTrakt by remember { mutableStateOf(false) }
+    var showMetadataEditor by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Dialog(
@@ -406,6 +530,22 @@ fun MovieDetailDialog(
                         Spacer(Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            val metaParts = buildList {
+                                if (yearStr.isNotBlank()) add(yearStr)
+                                if (type.isNotBlank()) add(type)
+                                if (type.equals("Series", ignoreCase = true) && seasonStr.isNotBlank()) {
+                                    add("S${seasonStr.padStart(2, '0')}")
+                                }
+                                if (imdbId.isNotBlank()) add(imdbId)
+                            }
+                            if (metaParts.isNotEmpty()) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = metaParts.joinToString(" • "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             if (imdbRating != null) {
                                 Spacer(Modifier.height(4.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -555,22 +695,15 @@ fun MovieDetailDialog(
                         }
                     )
 
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = watchedDate,
-                            onValueChange = { watchedDate = it },
-                            label = { Text("Watched Date (YYYY-MM-DD)") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        FilledTonalButton(onClick = {
+                    WatchedDateSelectorRow(
+                        watchedDate = watchedDate,
+                        onDatePicked = { picked ->
+                            watchedDate = picked
                             status = MovieStatus.WATCHED
-                            watchedDate = CsvAndBackupHelper.todayIsoDate()
                             if (rewatchCount < 1) rewatchCount = 1
-                        }) {
-                            Text("Today")
-                        }
-                    }
+                        },
+                        onClearDate = { watchedDate = "" }
+                    )
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -621,44 +754,61 @@ fun MovieDetailDialog(
                     }
 
                     OutlinedTextField(
-                        value = title,
-                        onValueChange = { title = it },
-                        label = { Text("Title") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = yearStr,
-                            onValueChange = { yearStr = it.filter { ch -> ch.isDigit() }.take(4) },
-                            label = { Text("Year") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = seasonStr,
-                            onValueChange = { seasonStr = it.filter { ch -> ch.isDigit() }.take(2) },
-                            label = { Text("Season") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = imdbId,
-                            onValueChange = { imdbId = CsvAndBackupHelper.extractImdbId(it).ifBlank { it } },
-                            label = { Text("IMDb ID") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1.2f)
-                        )
-                    }
-                    OutlinedTextField(
                         value = notes,
                         onValueChange = { notes = it },
                         label = { Text("Notes") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2
                     )
+
+                    TextButton(
+                        onClick = { showMetadataEditor = !showMetadataEditor },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Icon(AppIcons.Edit, null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (showMetadataEditor) "Hide title & ID editor" else "Edit title / IMDb ID",
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    if (showMetadataEditor) {
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            label = { Text("Title") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = yearStr,
+                                onValueChange = { yearStr = it.filter { ch -> ch.isDigit() }.take(4) },
+                                label = { Text("Year") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (type.equals("Series", ignoreCase = true)) {
+                                OutlinedTextField(
+                                    value = seasonStr,
+                                    onValueChange = { seasonStr = it.filter { ch -> ch.isDigit() }.take(2) },
+                                    label = { Text("Season") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = imdbId,
+                                onValueChange = { imdbId = CsvAndBackupHelper.extractImdbId(it).ifBlank { it } },
+                                label = { Text("IMDb ID") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1.2f)
+                            )
+                        }
+                    }
                 }
 
                 Row(
@@ -675,7 +825,7 @@ fun MovieDetailDialog(
                                 title = title.trim().ifBlank { movie.title },
                                 type = type,
                                 releaseYear = yearStr.toIntOrNull() ?: 0,
-                                seasonNumber = seasonStr.toIntOrNull(),
+                                seasonNumber = if (type.equals("Series", ignoreCase = true)) seasonStr.toIntOrNull() else null,
                                 imdbId = imdbId.trim(),
                                 status = status,
                                 watchedDate = if (status == MovieStatus.WATCHED) watchedDate.trim() else "",
@@ -1011,7 +1161,7 @@ fun AddOrShareMovieDialog(
                             modifier = Modifier.fillMaxWidth()
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("Movie", "Series", "Documentary").forEach { t ->
+                            listOf("Movie", "Series").forEach { t ->
                                 FilterChip(
                                     selected = draftType == t,
                                     onClick = {
@@ -1066,12 +1216,10 @@ fun AddOrShareMovieDialog(
                             }
                         }
                         if (draftStatus == MovieStatus.WATCHED) {
-                            OutlinedTextField(
-                                value = draftDate,
-                                onValueChange = { draftDate = it },
-                                label = { Text("Watched Date (YYYY-MM-DD)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                            WatchedDateSelectorRow(
+                                watchedDate = draftDate,
+                                onDatePicked = { draftDate = it },
+                                onClearDate = { draftDate = "" }
                             )
                         }
                         OutlinedTextField(

@@ -54,7 +54,7 @@
 - **Offline-First SQLite Library:** Instant search across titles, IMDb IDs (`tt...`), genres, release years, and personal notes without needing an internet connection.
 - **Trakt-Inspired Dark UI (5-Tab Navigation):**
   - **Home:** *Continue Watching* carousel (in-progress series and shows with newly aired watchlist seasons), *Recently Watched*, and *Watchlist* picks.
-  - **Watchlist & Library:** Filter by status (`Watched`, `Watchlist`, `Dropped`) and type (`Movie`, `Series`, `Documentary`), switch between **3-Column Poster Grid** and **Detailed List**, and sort **Ascending (`↑`) / Descending (`↓`)** by Updated, Watched Date, IMDb Rating, My Score, Year, or Title.
+  - **Watchlist & Library:** Filter by status (`Watched`, `Watchlist`, `Dropped`) and type (`Movies`, `Series`), switch between **3-Column Poster Grid** and **Detailed List**, and sort **Ascending (`↑`) / Descending (`↓`)** by Updated, Watched Date, IMDb Rating, My Score, Year, or Title.
   - **Discover (`For My Taste` + `Library & Web`):** Switch seamlessly between AI recommendations and full-screen 3-column library/online poster search.
   - **Settings:** Centralized API keys, Trakt sync, CSV/JSON import-export, and backup controls.
 - **Grouped Series Tracking:** Automatically groups seasons (`S01`, `S02`, ...) under a single show with progress bars, quick mark-watched actions, `+ Add Season`, and TMDB season sync.
@@ -99,7 +99,7 @@
 - **Kho phim Offline siêu nhanh (SQLite):** Tìm kiếm tức thì theo tên phim, mã IMDb (`tt...`), thể loại, năm phát hành và ghi chú cá nhân mà không cần mạng.
 - **Giao diện tối 5 tab (Home / Watchlist / Library / Discover / Settings):**
   - **Home:** *Continue Watching* (Series đang xem dở & Series có mùa mới trong Watchlist), *Recently Watched* và *Watchlist*.
-  - **Watchlist & Library:** Lọc theo trạng thái (`Watched`, `Watchlist`, `Dropped`), loại (`Movie`, `Series`, `Documentary`); chuyển đổi giữa **Lưới Poster 3 cột** và **Danh sách chi tiết**; sắp xếp **Tăng dần (`↑`) / Giảm dần (`↓`)**.
+  - **Watchlist & Library:** Lọc theo trạng thái (`Watched`, `Watchlist`, `Dropped`), loại (`Movies`, `Series`); chuyển đổi giữa **Lưới Poster 3 cột** và **Danh sách chi tiết**; sắp xếp **Tăng dần (`↑`) / Giảm dần (`↓`)**.
   - **Discover:** Gồm tab **For My Taste** (AI gợi ý) và **Library & Web** (tìm kiếm lưới poster 3 cột trong kho offline lẫn TMDB/OMDb online).
   - **Settings:** Quản lý API key, đồng bộ Trakt, nhập/xuất CSV/JSON và sao lưu.
 - **Quản lý Series theo nhóm mùa:** Tự động gộp `S01, S02...` về cùng một bộ phim với thanh tiến độ, đánh dấu nhanh từng mùa, thêm mùa mới và đồng bộ danh sách mùa từ TMDB.
