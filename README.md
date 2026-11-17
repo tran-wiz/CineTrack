@@ -16,13 +16,28 @@
 
 > *CineTrack on Android (Dark Theme)*
 
-| Home | For My Taste (AI) | Recommended Picks |
-| :---: | :---: | :---: |
-| ![Home](docs/screenshots/home.jpg) | ![For My Taste](docs/screenshots/discover.jpg) | ![Recommended Picks](docs/screenshots/recommended.jpg) |
-
-| Library & Web | Series Tracker | Details (IMDb & Trakt) |
-| :---: | :---: | :---: |
-| ![Library & Web](docs/screenshots/search.jpg) | ![Series Tracker](docs/screenshots/series.jpg) | ![Details](docs/screenshots/details.jpg) |
+<table>
+  <tr>
+    <th align="center">Home</th>
+    <th align="center">For My Taste (AI)</th>
+    <th align="center">Recommended Picks</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/home.jpg" width="240" alt="Home" /></td>
+    <td align="center"><img src="docs/screenshots/discover.jpg" width="240" alt="For My Taste" /></td>
+    <td align="center"><img src="docs/screenshots/recommended.jpg" width="240" alt="Recommended Picks" /></td>
+  </tr>
+  <tr>
+    <th align="center">Library &amp; Web</th>
+    <th align="center">Series Tracker</th>
+    <th align="center">Details (IMDb &amp; Trakt)</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/search.jpg" width="240" alt="Library and Web" /></td>
+    <td align="center"><img src="docs/screenshots/series.jpg" width="240" alt="Series Tracker" /></td>
+    <td align="center"><img src="docs/screenshots/details.jpg" width="240" alt="Details" /></td>
+  </tr>
+</table>
 
 ---
 

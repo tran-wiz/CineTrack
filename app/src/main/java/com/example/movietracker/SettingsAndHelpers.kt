@@ -200,6 +200,50 @@ internal fun shareBackupFileToDrive(context: Context, db: MovieDatabaseHelper) {
     context.startActivity(Intent.createChooser(intent, "Send backup to Google Drive"))
 }
 
+internal suspend fun openTraktTitleInAppOrBrowser(
+    context: Context,
+    title: String,
+    year: Int,
+    imdbId: String,
+    isSeries: Boolean
+) {
+    val prefs = context.getSharedPreferences("movie_tracker_prefs", Context.MODE_PRIVATE)
+    val clientId = prefs.getString("trakt_client_id", "") ?: ""
+    val resolvedUrl = withContext(Dispatchers.IO) {
+        TraktClient.resolveCanonicalTraktUrl(
+            clientId = clientId,
+            title = title,
+            year = year,
+            imdbId = imdbId,
+            isSeries = isSeries
+        )
+    }
+    val uri = Uri.parse(resolvedUrl)
+    val traktAppIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+        setPackage("tv.trakt.trakt")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val openedInApp = runCatching {
+        if (traktAppIntent.resolveActivity(context.packageManager) != null) {
+            context.startActivity(traktAppIntent)
+            true
+        } else {
+            false
+        }
+    }.getOrDefault(false)
+
+    if (!openedInApp) {
+        val browserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching {
+            context.startActivity(browserIntent)
+        }.onFailure {
+            Toast.makeText(context, "Could not open Trakt link", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
 @Composable
 fun PosterThumbnail(posterUrl: String, title: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current

@@ -42,11 +42,13 @@ fun SeriesDetailDialog(
     onSelectSeason: (MovieItem) -> Unit,
     onQuickMarkWatched: (MovieItem) -> Unit,
     onAddSeason: (Int) -> Unit,
+    onToggleHidden: (Boolean) -> Unit,
     onSyncSeriesInfo: (ApiMediaResult?, TmdbSeriesDetails?) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var isSyncing by remember { mutableStateOf(false) }
+    var isOpeningTrakt by remember { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -66,6 +68,15 @@ fun SeriesDetailDialog(
                     },
                     navigationIcon = {
                         IconButton(onClick = onDismiss) { Icon(AppIcons.Close, "Close") }
+                    },
+                    actions = {
+                        IconButton(onClick = { onToggleHidden(!group.isHidden) }) {
+                            Icon(
+                                if (group.isHidden) AppIcons.Visibility else AppIcons.VisibilityOff,
+                                contentDescription = if (group.isHidden) "Unhide series" else "Hide series",
+                                tint = if (group.isHidden) TraktPurple else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 )
 
@@ -105,6 +116,21 @@ fun SeriesDetailDialog(
                                 if (group.genres.isNotBlank()) {
                                     Text(group.genres, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
+                                if (group.isHidden) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Surface(
+                                        color = TraktPurple.copy(alpha = 0.16f),
+                                        shape = RoundedCornerShape(5.dp)
+                                    ) {
+                                        Text(
+                                            "Hidden (searchable only)",
+                                            color = TraktPurple,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                                 Spacer(Modifier.height(8.dp))
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     val imdbUrl = group.imdbUrl.ifBlank {
@@ -124,14 +150,25 @@ fun SeriesDetailDialog(
                                     }
                                     item {
                                         OutlinedButton(
+                                            enabled = !isOpeningTrakt,
                                             onClick = {
-                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(group.effectiveTraktUrl())))
+                                                isOpeningTrakt = true
+                                                scope.launch {
+                                                    openTraktTitleInAppOrBrowser(
+                                                        context = context,
+                                                        title = group.title,
+                                                        year = group.releaseYear,
+                                                        imdbId = group.imdbId,
+                                                        isSeries = true
+                                                    )
+                                                    isOpeningTrakt = false
+                                                }
                                             },
                                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                         ) {
                                             Icon(AppIcons.OpenInNew, null, modifier = Modifier.size(14.dp))
                                             Spacer(Modifier.width(4.dp))
-                                            Text("Trakt", fontSize = 12.sp)
+                                            Text(if (isOpeningTrakt) "..." else "Trakt", fontSize = 12.sp)
                                         }
                                     }
                                     item {
@@ -241,6 +278,20 @@ fun SeriesDetailDialog(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
+                                        if (season.isHidden && !group.isHidden) {
+                                            Surface(
+                                                color = TraktPurple.copy(alpha = 0.16f),
+                                                shape = RoundedCornerShape(5.dp)
+                                            ) {
+                                                Text(
+                                                    "Hidden",
+                                                    color = TraktPurple,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                     if (season.notes.isNotBlank()) {
                                         Text(
@@ -273,6 +324,7 @@ fun MovieDetailDialog(
     tmdbKey: String,
     onDismiss: () -> Unit,
     onSave: (MovieItem) -> Unit,
+    onToggleHidden: (MovieItem, Boolean) -> Unit,
     onDelete: (MovieItem) -> Unit
 ) {
     val context = LocalContext.current
@@ -293,9 +345,11 @@ fun MovieDetailDialog(
     var posterUrl by remember { mutableStateOf(movie.posterUrl) }
     var episodeProgress by remember { mutableStateOf(movie.episodeProgress) }
     var notes by remember { mutableStateOf(movie.notes) }
+    var isHidden by remember(movie.id, movie.isHidden) { mutableStateOf(movie.isHidden) }
 
     var syncMessage by remember { mutableStateOf("") }
     var isFetching by remember { mutableStateOf(false) }
+    var isOpeningTrakt by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Dialog(
@@ -316,6 +370,17 @@ fun MovieDetailDialog(
                         IconButton(onClick = onDismiss) { Icon(AppIcons.Close, "Close") }
                     },
                     actions = {
+                        IconButton(onClick = {
+                            val newHidden = !isHidden
+                            isHidden = newHidden
+                            onToggleHidden(movie, newHidden)
+                        }) {
+                            Icon(
+                                if (isHidden) AppIcons.Visibility else AppIcons.VisibilityOff,
+                                contentDescription = if (isHidden) "Unhide title" else "Hide title",
+                                tint = if (isHidden) TraktPurple else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         IconButton(onClick = { confirmDelete = true }) {
                             Icon(AppIcons.Delete, "Delete", tint = DroppedRed)
                         }
@@ -372,15 +437,25 @@ fun MovieDetailDialog(
                                 }
                                 item {
                                     OutlinedButton(
+                                        enabled = !isOpeningTrakt,
                                         onClick = {
-                                            val tUrl = movie.copy(imdbId = imdbId, title = title).effectiveTraktUrl()
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(tUrl)))
+                                            isOpeningTrakt = true
+                                            scope.launch {
+                                                openTraktTitleInAppOrBrowser(
+                                                    context = context,
+                                                    title = title,
+                                                    year = yearStr.toIntOrNull() ?: 0,
+                                                    imdbId = imdbId,
+                                                    isSeries = type.equals("Series", ignoreCase = true)
+                                                )
+                                                isOpeningTrakt = false
+                                            }
                                         },
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                     ) {
                                         Icon(AppIcons.OpenInNew, null, modifier = Modifier.size(14.dp))
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Trakt", fontSize = 12.sp)
+                                        Text(if (isOpeningTrakt) "..." else "Trakt", fontSize = 12.sp)
                                     }
                                 }
                                 item {
@@ -460,6 +535,25 @@ fun MovieDetailDialog(
                             )
                         }
                     }
+
+                    FilterChip(
+                        selected = isHidden,
+                        onClick = {
+                            val newHidden = !isHidden
+                            isHidden = newHidden
+                            onToggleHidden(movie, newHidden)
+                        },
+                        leadingIcon = {
+                            Icon(
+                                if (isHidden) AppIcons.VisibilityOff else AppIcons.Visibility,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(if (isHidden) "Hidden from lists (searchable)" else "Hide from Home & Library")
+                        }
+                    )
 
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -592,6 +686,7 @@ fun MovieDetailDialog(
                                 plot = plot,
                                 posterUrl = posterUrl,
                                 episodeProgress = episodeProgress.trim(),
+                                isHidden = isHidden,
                                 notes = notes.trim()
                             )
                         )
@@ -792,7 +887,8 @@ fun AddOrShareMovieDialog(
                                     ) {
                                         Text(
                                             "${ex.displayTitle()} • ${ex.status.label}" +
-                                                if (ex.watchedDate.isNotBlank()) " (${ex.watchedDate})" else "",
+                                                (if (ex.watchedDate.isNotBlank()) " (${ex.watchedDate})" else "") +
+                                                (if (ex.isHidden) " • Hidden" else ""),
                                             style = MaterialTheme.typography.bodySmall,
                                             modifier = Modifier.weight(1f)
                                         )

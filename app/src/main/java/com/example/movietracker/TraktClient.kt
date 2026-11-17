@@ -7,7 +7,9 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 data class TraktDeviceCode(
     val deviceCode: String,
@@ -430,5 +432,83 @@ object TraktClient {
         appendSection("Live Trakt Popular TV Shows:", "/shows/popular?limit=8", null)
 
         return lines.joinToString("\n")
+    }
+
+    private val canonicalUrlCache = ConcurrentHashMap<String, String>()
+
+    fun resolveCanonicalTraktUrl(
+        clientId: String,
+        title: String,
+        year: Int,
+        imdbId: String,
+        isSeries: Boolean
+    ): String {
+        val cleanImdb = imdbId.trim().lowercase(Locale.ROOT)
+        val cleanTitle = title.trim()
+        val cacheKey = "${if (isSeries) "show" else "movie"}|$cleanImdb|${cleanTitle.lowercase(Locale.ROOT)}|$year"
+        canonicalUrlCache[cacheKey]?.let { return it }
+
+        val trimmedId = clientId.trim()
+        val desiredType = if (isSeries) "show" else "movie"
+
+        fun extractBestUrl(arr: JSONArray, matchYear: Boolean): String? {
+            var fallbackUrl: String? = null
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val itemType = item.optString("type").lowercase(Locale.ROOT)
+                val media = when (itemType) {
+                    "movie" -> item.optJSONObject("movie")
+                    "show" -> item.optJSONObject("show")
+                    else -> null
+                } ?: continue
+                val slug = media.optJSONObject("ids")?.optString("slug")?.trim().orEmpty()
+                if (slug.isBlank()) continue
+                val pathSegment = if (itemType == "show") "shows" else "movies"
+                val url = "https://trakt.tv/$pathSegment/$slug"
+                val itemYear = media.optInt("year", 0)
+                val typeMatches = itemType == desiredType
+                val yearMatches = !matchYear || year <= 0 || itemYear <= 0 || kotlin.math.abs(itemYear - year) <= 1
+                if (typeMatches && yearMatches) return url
+                if (fallbackUrl == null && typeMatches) fallbackUrl = url
+                if (fallbackUrl == null) fallbackUrl = url
+            }
+            return fallbackUrl
+        }
+
+        if (trimmedId.isNotBlank()) {
+            if (cleanImdb.startsWith("tt")) {
+                val urlFromImdb = runCatching {
+                    val resp = request("GET", "/search/imdb/$cleanImdb?type=movie,show", trimmedId)
+                    if (resp.code in 200..299 && resp.body.isNotBlank()) {
+                        extractBestUrl(JSONArray(resp.body), matchYear = false)
+                    } else null
+                }.getOrNull()
+                if (!urlFromImdb.isNullOrBlank()) {
+                    canonicalUrlCache[cacheKey] = urlFromImdb
+                    return urlFromImdb
+                }
+            }
+
+            if (cleanTitle.isNotBlank()) {
+                val urlFromQuery = runCatching {
+                    val encoded = URLEncoder.encode(cleanTitle, "UTF-8")
+                    val resp = request("GET", "/search/$desiredType?query=$encoded", trimmedId)
+                    if (resp.code in 200..299 && resp.body.isNotBlank()) {
+                        extractBestUrl(JSONArray(resp.body), matchYear = true)
+                    } else null
+                }.getOrNull()
+                if (!urlFromQuery.isNullOrBlank()) {
+                    canonicalUrlCache[cacheKey] = urlFromQuery
+                    return urlFromQuery
+                }
+            }
+        }
+
+        val fallbackQuery = cleanTitle.ifBlank { cleanImdb }
+        return if (fallbackQuery.isNotBlank()) {
+            "https://trakt.tv/search?query=${URLEncoder.encode(fallbackQuery, "UTF-8")}"
+        } else {
+            "https://trakt.tv"
+        }
     }
 }

@@ -55,6 +55,7 @@ data class MovieItem(
     val notes: String = "",
     val episodeProgress: String = "",
     val seriesEnded: Boolean = false,
+    val isHidden: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
@@ -73,10 +74,11 @@ data class MovieItem(
     }
 
     fun effectiveTraktUrl(): String {
-        return if (imdbId.isNotBlank()) {
-            "https://trakt.tv/search/imdb/$imdbId"
+        val query = title.trim().ifBlank { imdbId.trim() }
+        return if (query.isNotBlank()) {
+            "https://trakt.tv/search?query=${URLEncoder.encode(query, "UTF-8")}"
         } else {
-            "https://trakt.tv/search?query=${URLEncoder.encode(title, "UTF-8")}"
+            "https://trakt.tv"
         }
     }
 
@@ -100,6 +102,7 @@ sealed interface LibraryEntry {
     val entryTitle: String
     val entryStatus: MovieStatus
     val isCurrentlyWatching: Boolean
+    val isEntryHidden: Boolean
 }
 
 data class SingleLibraryEntry(val item: MovieItem) : LibraryEntry {
@@ -113,6 +116,7 @@ data class SingleLibraryEntry(val item: MovieItem) : LibraryEntry {
     override val entryTitle: String get() = item.title
     override val entryStatus: MovieStatus get() = item.status
     override val isCurrentlyWatching: Boolean get() = false
+    override val isEntryHidden: Boolean get() = item.isHidden
 }
 
 data class SeriesGroupEntry(
@@ -133,6 +137,7 @@ data class SeriesGroupEntry(
     val activeWatchingNote: String,
     val nextWatchlistSeason: Int?,
     val seriesEnded: Boolean,
+    val isHidden: Boolean,
     override val sortUpdatedAt: Long,
     override val sortWatchedDate: String
 ) : LibraryEntry {
@@ -144,6 +149,7 @@ data class SeriesGroupEntry(
     override val entryTitle: String get() = title
     override val isCurrentlyWatching: Boolean
         get() = activeWatchingNote.isNotBlank() || (watchedCount > 0 && watchlistCount > 0)
+    override val isEntryHidden: Boolean get() = isHidden
     override val entryStatus: MovieStatus
         get() = when {
             watchedCount == seasons.size && seasons.isNotEmpty() -> MovieStatus.WATCHED
@@ -154,10 +160,11 @@ data class SeriesGroupEntry(
         }
 
     fun effectiveTraktUrl(): String {
-        return if (imdbId.isNotBlank()) {
-            "https://trakt.tv/search/imdb/$imdbId"
+        val query = title.trim().ifBlank { imdbId.trim() }
+        return if (query.isNotBlank()) {
+            "https://trakt.tv/search?query=${URLEncoder.encode(query, "UTF-8")}"
         } else {
-            "https://trakt.tv/search?query=${URLEncoder.encode(title, "UTF-8")}"
+            "https://trakt.tv"
         }
     }
 }
@@ -182,12 +189,20 @@ fun buildLibraryEntries(
     statusFilter: MovieStatus?,
     typeFilter: String?,
     sortOption: SortOption,
-    sortAscending: Boolean = sortOption.defaultAscending
+    sortAscending: Boolean = sortOption.defaultAscending,
+    includeHidden: Boolean = false,
+    hiddenOnly: Boolean = false
 ): List<LibraryEntry> {
     val entries = mutableListOf<LibraryEntry>()
     val seriesBuckets = linkedMapOf<String, MutableList<MovieItem>>()
 
-    for (item in allItems) {
+    val sourceItems = when {
+        hiddenOnly -> allItems.filter { it.isHidden }
+        includeHidden -> allItems
+        else -> allItems.filter { !it.isHidden }
+    }
+
+    for (item in sourceItems) {
         if (item.type.equals("Series", ignoreCase = true)) {
             seriesBuckets.getOrPut(item.seriesGroupKey()) { mutableListOf() }.add(item)
         } else {
@@ -236,6 +251,7 @@ fun buildLibraryEntries(
                 activeWatchingNote = activeProgress,
                 nextWatchlistSeason = nextWlSeason,
                 seriesEnded = seasons.any { it.seriesEnded },
+                isHidden = seasons.isNotEmpty() && seasons.all { it.isHidden },
                 sortUpdatedAt = seasons.maxOf { it.updatedAt },
                 sortWatchedDate = seasons.mapNotNull { it.watchedDate.ifBlank { null } }.maxOrNull() ?: ""
             )
@@ -349,7 +365,7 @@ class MovieDatabaseHelper(context: Context) :
 
     companion object {
         private const val DATABASE_NAME = "movie_tracker.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val TABLE_MOVIES = "movies"
     }
 
@@ -375,6 +391,7 @@ class MovieDatabaseHelper(context: Context) :
                 notes TEXT NOT NULL DEFAULT '',
                 episode_progress TEXT NOT NULL DEFAULT '',
                 series_ended INTEGER NOT NULL DEFAULT 0,
+                is_hidden INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
@@ -389,6 +406,9 @@ class MovieDatabaseHelper(context: Context) :
         if (oldVersion < 2) {
             runCatching { db.execSQL("ALTER TABLE $TABLE_MOVIES ADD COLUMN episode_progress TEXT NOT NULL DEFAULT ''") }
             runCatching { db.execSQL("ALTER TABLE $TABLE_MOVIES ADD COLUMN series_ended INTEGER NOT NULL DEFAULT 0") }
+        }
+        if (oldVersion < 3) {
+            runCatching { db.execSQL("ALTER TABLE $TABLE_MOVIES ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0") }
         }
     }
 
@@ -415,6 +435,7 @@ class MovieDatabaseHelper(context: Context) :
             put("notes", notes.trim())
             put("episode_progress", episodeProgress.trim())
             put("series_ended", if (seriesEnded) 1 else 0)
+            put("is_hidden", if (isHidden) 1 else 0)
             put("created_at", createdAt)
             put("updated_at", updatedAt)
         }
@@ -426,6 +447,7 @@ class MovieDatabaseHelper(context: Context) :
         val persRatIdx = getColumnIndexOrThrow("personal_rating")
         val epProgIdx = getColumnIndex("episode_progress")
         val endedIdx = getColumnIndex("series_ended")
+        val hiddenIdx = getColumnIndex("is_hidden")
         return MovieItem(
             id = getLong(getColumnIndexOrThrow("id")),
             title = getString(getColumnIndexOrThrow("title")),
@@ -445,6 +467,7 @@ class MovieDatabaseHelper(context: Context) :
             notes = getString(getColumnIndexOrThrow("notes")),
             episodeProgress = if (epProgIdx >= 0 && !isNull(epProgIdx)) getString(epProgIdx) else "",
             seriesEnded = endedIdx >= 0 && !isNull(endedIdx) && getInt(endedIdx) == 1,
+            isHidden = hiddenIdx >= 0 && !isNull(hiddenIdx) && getInt(hiddenIdx) == 1,
             createdAt = getLong(getColumnIndexOrThrow("created_at")),
             updatedAt = getLong(getColumnIndexOrThrow("updated_at"))
         )
@@ -463,6 +486,21 @@ class MovieDatabaseHelper(context: Context) :
 
     fun deleteMovie(id: Long) {
         writableDatabase.delete(TABLE_MOVIES, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun setHiddenForIds(ids: List<Long>, hidden: Boolean) {
+        if (ids.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val cv = ContentValues().apply { put("is_hidden", if (hidden) 1 else 0) }
+            for (id in ids) {
+                db.update(TABLE_MOVIES, cv, "id = ?", arrayOf(id.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun findByImdbId(imdbId: String): List<MovieItem> {
@@ -494,7 +532,7 @@ class MovieDatabaseHelper(context: Context) :
         var watchlist = 0
         var dropped = 0
         readableDatabase.rawQuery(
-            "SELECT status, COUNT(*) FROM $TABLE_MOVIES GROUP BY status",
+            "SELECT status, COUNT(*) FROM $TABLE_MOVIES WHERE is_hidden = 0 GROUP BY status",
             null
         ).use { c ->
             while (c.moveToNext()) {
@@ -516,7 +554,8 @@ class MovieDatabaseHelper(context: Context) :
         readableDatabase.rawQuery(
             """
             SELECT * FROM $TABLE_MOVIES
-            WHERE (imdb_rating IS NULL OR poster_url = '' OR genres = '')
+            WHERE is_hidden = 0
+            AND (imdb_rating IS NULL OR poster_url = '' OR genres = '')
             AND (imdb_id != '' OR title != '')
             ORDER BY id DESC
             LIMIT ?
@@ -638,6 +677,7 @@ class MovieDatabaseHelper(context: Context) :
                         posterUrl = existing.posterUrl.ifBlank { item.posterUrl },
                         episodeProgress = item.episodeProgress.ifBlank { existing.episodeProgress },
                         seriesEnded = existing.seriesEnded || item.seriesEnded,
+                        isHidden = existing.isHidden || item.isHidden,
                         notes = mergedNotes,
                         updatedAt = System.currentTimeMillis()
                     )
@@ -1044,13 +1084,14 @@ object CsvAndBackupHelper {
                 put("notes", m.notes)
                 put("episodeProgress", m.episodeProgress)
                 put("seriesEnded", m.seriesEnded)
+                put("isHidden", m.isHidden)
                 put("createdAt", m.createdAt)
                 put("updatedAt", m.updatedAt)
             })
         }
         return JSONObject().apply {
             put("app", "MovieTracker")
-            put("version", 3)
+            put("version", 4)
             put("exportedAt", System.currentTimeMillis())
             put("movies", arr)
         }.toString(2)
@@ -1081,6 +1122,7 @@ object CsvAndBackupHelper {
                     notes = o.optString("notes", ""),
                     episodeProgress = o.optString("episodeProgress", ""),
                     seriesEnded = o.optBoolean("seriesEnded", false),
+                    isHidden = o.optBoolean("isHidden", false),
                     createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                     updatedAt = o.optLong("updatedAt", System.currentTimeMillis())
                 )

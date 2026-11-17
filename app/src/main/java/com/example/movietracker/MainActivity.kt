@@ -221,7 +221,15 @@ fun MovieTrackerApp(
 
     val activeSeriesGroup = remember(selectedSeriesKey, allMovies) {
         val key = selectedSeriesKey ?: return@remember null
-        buildLibraryEntries(allMovies, "", null, "Series", SortOption.TITLE_ASC, true)
+        buildLibraryEntries(
+            allItems = allMovies,
+            search = "",
+            statusFilter = null,
+            typeFilter = "Series",
+            sortOption = SortOption.TITLE_ASC,
+            sortAscending = true,
+            includeHidden = true
+        )
             .filterIsInstance<SeriesGroupEntry>()
             .firstOrNull { it.groupKey == key }
     }
@@ -520,6 +528,19 @@ fun MovieTrackerApp(
                     }
                 }
             },
+            onToggleHidden = { hide ->
+                scope.launch(Dispatchers.IO) {
+                    db.setHiddenForIds(group.seasons.map { it.id }, hide)
+                    withContext(Dispatchers.Main) {
+                        triggerDataUpdated()
+                        Toast.makeText(
+                            context,
+                            if (hide) "Series hidden (still appears in Search)" else "Series unhidden",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            },
             onSyncSeriesInfo = { res, tmdbDetails ->
                 scope.launch(Dispatchers.IO) {
                     val today = CsvAndBackupHelper.todayIsoDate()
@@ -587,6 +608,20 @@ fun MovieTrackerApp(
                         selectedMovie = null
                         triggerDataUpdated()
                         Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onToggleHidden = { target, hide ->
+                scope.launch(Dispatchers.IO) {
+                    db.setHiddenForIds(listOf(target.id), hide)
+                    withContext(Dispatchers.Main) {
+                        selectedMovie = target.copy(isHidden = hide)
+                        triggerDataUpdated()
+                        Toast.makeText(
+                            context,
+                            if (hide) "Title hidden (still appears in Search)" else "Title unhidden",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
             },
@@ -1124,8 +1159,38 @@ fun SearchTabScreen(
     onOpenEntry: (LibraryEntry) -> Unit,
     onSearchOnline: (String) -> Unit
 ) {
-    val entries = remember(allMovies, searchQuery, typeFilter, sortOption, sortAscending) {
-        buildLibraryEntries(allMovies, searchQuery, null, typeFilter, sortOption, sortAscending)
+    var showHiddenOnly by remember { mutableStateOf(false) }
+
+    val hiddenEntryCount = remember(allMovies) {
+        buildLibraryEntries(
+            allItems = allMovies,
+            search = "",
+            statusFilter = null,
+            typeFilter = null,
+            sortOption = SortOption.TITLE_ASC,
+            sortAscending = true,
+            includeHidden = true,
+            hiddenOnly = true
+        ).size
+    }
+
+    LaunchedEffect(hiddenEntryCount) {
+        if (hiddenEntryCount == 0 && showHiddenOnly) {
+            showHiddenOnly = false
+        }
+    }
+
+    val entries = remember(allMovies, searchQuery, typeFilter, sortOption, sortAscending, showHiddenOnly) {
+        buildLibraryEntries(
+            allItems = allMovies,
+            search = searchQuery,
+            statusFilter = null,
+            typeFilter = typeFilter,
+            sortOption = sortOption,
+            sortAscending = sortAscending,
+            includeHidden = searchQuery.isNotBlank() || showHiddenOnly,
+            hiddenOnly = showHiddenOnly
+        )
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1139,7 +1204,11 @@ fun SearchTabScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            if (searchQuery.isBlank()) "Your library is empty" else "No match in your library",
+                            when {
+                                showHiddenOnly -> "No hidden titles match"
+                                searchQuery.isBlank() -> "Your library is empty"
+                                else -> "No match in your library"
+                            },
                             fontWeight = FontWeight.SemiBold,
                             color = Color.White
                         )
@@ -1201,8 +1270,11 @@ fun SearchTabScreen(
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     item {
                         FilterChip(
-                            selected = typeFilter == null,
-                            onClick = { onTypeFilterChange(null) },
+                            selected = typeFilter == null && !showHiddenOnly,
+                            onClick = {
+                                onTypeFilterChange(null)
+                                showHiddenOnly = false
+                            },
                             label = { Text("All (${entries.size})") }
                         )
                     }
@@ -1212,6 +1284,18 @@ fun SearchTabScreen(
                                 selected = typeFilter == value,
                                 onClick = { onTypeFilterChange(if (typeFilter == value) null else value) },
                                 label = { Text(label) }
+                            )
+                        }
+                    }
+                    if (hiddenEntryCount > 0) {
+                        item {
+                            FilterChip(
+                                selected = showHiddenOnly,
+                                onClick = { showHiddenOnly = !showHiddenOnly },
+                                leadingIcon = {
+                                    Icon(AppIcons.VisibilityOff, null, modifier = Modifier.size(15.dp))
+                                },
+                                label = { Text("Hidden ($hiddenEntryCount)") }
                             )
                         }
                     }
@@ -1282,6 +1366,30 @@ fun TraktPosterGridTile(entry: LibraryEntry, onClick: () -> Unit) {
                         .align(Alignment.Center)
                         .padding(horizontal = 6.dp)
                 )
+            }
+
+            if (entry.isEntryHidden) {
+                Surface(
+                    color = Color(0xCC14151C),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(5.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(AppIcons.VisibilityOff, null, tint = TraktPurple, modifier = Modifier.size(11.dp))
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            "Hidden",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TraktPurple
+                        )
+                    }
+                }
             }
 
             Box(
